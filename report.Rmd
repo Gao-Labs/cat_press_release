@@ -1,0 +1,279 @@
+---
+output: 
+  officedown::rdocx_document:
+    reference_docx: styles.docx
+params:
+  table: "granddata.d36109"
+  year: 2020
+  pollutant: 98
+  report_type: "demo"
+  # graph: "multiline"
+  graph: "donut"
+  # set: "fueltype"
+  set: "sourcetype"
+always_allow_html: true
+---
+
+```{r setup, include = FALSE}
+# Set options
+knitr::opts_chunk$set(echo = TRUE, fig.cap = TRUE)
+# Load required packages
+library(officer) # need to load this from source
+library(officedown) # making docx out of Rmd files.
+library(httr) # API queries
+library(jsonlite) # working with jsons
+library(dplyr) # data wrangling
+#library(stringr, lib.loc = "../lib") # String manipulation
+#library(magrittr, lib.loc = "../lib") 
+library(ggtext) # adding HTML into data visualizations
+# library(ggplot2) # data visualization
+library(catviz) # for making visualizations
+library(stringr) # for string manipulation
+library(purrr) # for tidy for loops
+
+retrieve_p = function(table = "granddata.36109", year = 2025, pollutant = 98){
+  # table = "granddata.d36109"; year = 2025; pollutant = 98;
+  
+  # Example Query:
+  # https://api.cat-apps.com/visualizer/v1/retrieve_p/?table=granddata.d36109&year=2025&pollutant=98
+
+  base = "https://api.cat-apps.com/visualizer/v1/retrieve_p/"
+  # Make a table id
+  url = paste0(base, "?", "table=", table, "&",
+               "year=", year, "&", 
+               "pollutant=", pollutant)
+  
+    # Get headers  
+  headers = httr::add_headers("Content-Type" = "application/json")
+
+  # Send query
+  result = httr::GET(url = url, headers)
+
+  # If the query cannot be completed, return NULL
+  if(result$status_code != 200){ return(NULL)  }
+
+  # Otherise, return this and process it into an R list object
+  output = result %>%
+    with(content) %>%
+    rawToChar() %>%
+    jsonlite::fromJSON()
+
+  return(output)
+}
+
+# Write a data-retrieval function
+retrieve_data = function(geoid = "36109", year = 2025, pollutant = 98, set = "sourcetype", metric = "emissions"){
+  
+  # Testing values
+  # geoid = "36109"; year = 2025; pollutant = 98; set = "sourcetype"; metric = "emissions"
+  
+  base = "https://api.cat-apps.com/reporter/v1/retrieve_data/donut"
+  url = paste0(base, "?", "geoid=", geoid, "&",
+               "year=", year, "&", 
+               "pollutant=", pollutant, "&",
+               "set=", set, "&",
+               "metric=", metric)
+
+  # Goal: this kind of API query
+  # https://api.cat-apps.com/reporter/v1/retrieve_data/donut?geoid=36109&year=2025&pollutant=98&set=fueltype&metric=vmt
+
+  # Get headers  
+  headers = httr::add_headers("Content-Type" = "application/json")
+
+  # Send query
+  result = httr::GET(url = url, headers)
+
+  # If the query cannot be completed, return NULL
+  if(result$status_code != 200){ return(NULL)  }
+
+  # Otherise, return this and process it into an R list object
+  output = result %>%
+    with(content) %>%
+    rawToChar() %>%
+    jsonlite::fromJSON()
+
+  return(output)
+
+}
+
+# Apply the functions and retrieve data from CAT API.
+p = retrieve_p(table = params$table, year = params$year, pollutant = params$pollutant)
+
+# Access the geoid of that table
+# geoid = params$table %>% 
+#   str_extract("(d[0-9]{5}|d[0-9]{2})") %>% 
+#   str_remove("d") 
+
+# Generate the tabulated data for a bar / donut plot.
+tab = retrieve_data(geoid = p$poi$geoid, year = params$year, pollutant = params$pollutant, set = params$set, metric = "emissions")
+
+# Generate the visual
+if(params$graph == "donut"){
+  viz = catviz::visualize_donut(tab = tab, plotly = FALSE)  
+}else if(params$graph == "bar"){
+  viz = catviz::visualize_bar(tab = tab, plotly = FALSE)  
+}else{ stop("That plot type is not currently supported.") }
+
+
+# Hidden code chunk for background calculations.
+# Make a pluralizer function
+pluralize = function(word){
+  # Make type plural if need be
+  # Get last character
+  letter = stringr::str_sub(word, -1, -1) 
+  # Make it plural based on some rules
+  pluralized = if(letter == "s"){ 
+    "ses"
+  }else if(letter == "y"){
+    "ies"    
+  }else{ paste0(letter, "s") }
+  # Overwrite label with type
+  word = word %>% str_sub(1, -2) %>% paste0(pluralized)  
+  return(word)
+}
+
+bullet = function(tab, i){
+  # Testing values
+  # tab; i = 1
+  
+  # Get data from tab object  
+  output = tab$data %>% 
+    # Get ith row
+    dplyr::slice(i) %>%
+    # Get these variables
+    dplyr::select(type, year, label_value, label_percent) 
+  # Pluralize type
+  output$type = pluralize(output$type)
+  # Return it
+  return(output)
+}
+
+capitalize_first= function(words){
+  word_list=strsplit(words, split = " ")
+  result=''
+  for (i in 1:length(word_list[[1]])){
+    word=word_list[[1]][i]
+    if (i>1){
+      word=tolower(word)
+    }
+    result=paste(result,word,sep=" ")
+  }
+  return(result)
+}
+
+
+# Check how many rows / slices are in my donut?
+# n = tab %>% nrow()
+b1 = bullet(tab = tab, i = 1)
+# b1$type
+# b1$year
+# b1$label_value
+b2 = bullet(tab = tab, i = 2)
+
+# Make bullet information
+n = tab$.n
+b3 = 3:n %>% purrr::map_dfr(~bullet(tab = tab, i = .))
+b3$title = paste0(b3$type[1], ", ", b3$type[2], ", and ", b3$type[3])
+
+# Find a way to reference that set type
+set_text = switch(
+  EXPR = params$set,
+  "sourcetype" = "types of vehicles",
+  "fueltype" = "types of fuel",
+  "regclass" = "regulatory classes",
+  "roadtype" = "types of roads",
+  "types")
+
+# Find a way to reference that set type
+set_singular = switch(
+  EXPR = params$set,
+  "sourcetype" = "type of vehicle",
+  "fueltype" = "type of fuel",
+  "regclass" = "regulatory class",
+  "roadtype" = "type of road",
+  "type")
+
+# switch(
+#   EXPR = params$set,
+#   "sourcetype" = "vehicles",
+#   "fueltype" = "fuels",
+#   "regclass" = "regulatory classes",
+#   "roadtype" = "road types",
+#   "types")
+
+```
+
+```{r logo, echo=FALSE}
+# LOGO
+section_logo <- fpar(
+  external_img(src = "logo_cat.png", height = 3/5, width = 6/5, alt = "CAT Logo"),
+  ftext("                                                        ", fp_text(font.size = 15)),
+  external_img(src = "logo_reporter.png", height = 3/5, width = 10/5, alt = "REPORTER Logo"),
+  fp_p = fp_par(text.align = "left", keep_with_next = TRUE)
+)
+
+# Output logo
+section_logo
+```
+
+```{r header, echo=FALSE}
+# HEADER
+
+# Example
+# statement = "CO2e Emissions Distribution in Tompkins County 2020"
+pollutant_simple = if_else(
+  condition = p$pollutant_label == "CO2e",
+  true = "Carbon", false = p$pollutant_label)
+
+statement = paste0(pollutant_simple, " ", "Emissions in ", 
+                   p$poi$name, " ", p$poi$area, ", ", p$year) 
+
+# Make the header
+bold_face <- shortcuts$fp_bold(font.size = 20)
+bold_greenface <- update(bold_face, color = "#648fff")
+section_header <- fpar(
+  ftext(statement, prop = bold_greenface ),
+  run_linebreak(),
+  ftext("Made with CAT VISUALIZER by Gao Labs @ Cornell University."),
+  fp_p = fp_par(text.align = "center"))
+
+# Output header
+section_header
+```
+
+New Research Shed Light on the Impact of Vehicle Emissions on `r p$pollutant_label` and `r b1$type`, `r b2$type`, `r b3$type[1]`, `r b3$type[2]`, `r b3$type[3]`. Estimates from the Climate Action in Transportation (CAT) Dashboard from Cornell University are empowering communities with vital data for a healthier and more sustainable environment.
+
+<!---BLOCK_MULTICOL_START--->
+
+```{r echo=FALSE, message=FALSE, fig.keep='all',dpi=300,fig.width=4, fig.height=4, fig.align = 'left'}
+# Render plot
+viz
+# knitr::include_graphics(path = g$plot_path)
+```
+
+`r run_columnbreak()`
+
+1. **`r b1$type` Take the Lead:** `r b1$type` are the primary culprits, accounting for a staggering `r b1$label_percent` of total emissions. This indicates that they are either more abundant in number, have higher emission rates, or both. \
+2. **`r b2$type`, Still a Concern:** Surprisingly, combined emissions from `r tolower(b2$type)` come in second at `r b2$label_percent`. This demonstrates the collective impact of these `r set_text` in the region.\
+3. **`r b3$title[1]`:** `r capitalize_first(b3$type[1])` contribute `r b3$label_percent[1]` of the `r p$pollutant_label` emissions, followed by `r tolower(b3$type[2])` at `r b3$label_percent[2]`. `r b3$type[3]` represent a mere `r b3$label_percent[3]`.
+
+
+
+<!---BLOCK_MULTICOL_STOP{widths: [4,3], space: 0.1, sep: true}--->
+
+In conclusion, while each `r set_singular` contributes to the overall `r tolower(pollutant_simple)` emissions of `r paste0(p$poi$name, " ", p$poi$area)`, efforts to reduce emissions might be most effective if they initially focus on `r tolower(b1$type)` and `r tolower(b2$type)`. It provides a clearer picture of where interventions could be targeted for a low-emissions future.
+
+```{r echo=FALSE}
+section_footer <- fpar(
+  ftext("Contact Information:"),
+  run_linebreak(),
+  ftext("Department Name, Organization Name"),
+  run_linebreak(),
+  ftext("Street Address, City, State"),
+  run_linebreak(),
+  ftext("Email: name@thing.com"),
+  fp_p = fp_par(text.align = "right"))
+
+section_footer
+```
+
